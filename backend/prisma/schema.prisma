@@ -1,0 +1,428 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  holdings          Holding[]
+  budgets           MonthlyBudget[]
+  savingsAccounts   SavingsAccount[]
+  accounts          Account[]
+  transactions      Transaction[]
+  portfolioSnapshots PortfolioSnapshot[]
+  dcaPlans          DcaPlan[]
+  alertRules        AlertRule[]
+  dipBuyConfig      DipBuyConfig?
+  dipBuyLogs        DipBuyLog[]
+  dsipPlans         DsipPlan[]
+  binanceTrades     BinanceTrade[]
+}
+
+// ─────────────────────────────────────────
+// BROKER ACCOUNTS (Binance, VNDirect…)
+// ─────────────────────────────────────────
+model Account {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  broker     Broker
+  label      String?
+  apiKey     String?
+  apiSecret  String?
+  extra      Json?    // VNDirect: { accountNo, pin }
+  isActive   Boolean  @default(true)
+  lastSyncAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  transactions Transaction[]
+  dcaPlans     DcaPlan[]
+
+  @@index([userId])
+}
+
+enum Broker {
+  BINANCE
+  VNDIRECT
+  MANUAL
+}
+
+// ─────────────────────────────────────────
+// ASSET MASTER
+// ─────────────────────────────────────────
+model Asset {
+  id        String    @id @default(cuid())
+  symbol    String
+  name      String
+  assetType AssetType
+  currency  String    @default("USD")
+  exchange  String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  transactions  Transaction[]
+  priceHistory  PriceHistory[]
+  dcaPlans      DcaPlan[]
+  alertRules    AlertRule[]
+
+  @@unique([symbol, exchange])
+  @@index([symbol])
+}
+
+enum AssetType {
+  CRYPTO
+  STOCK
+  BOND
+  ETF
+}
+
+// ─────────────────────────────────────────
+// TRANSACTIONS (raw trades from all sources)
+// ─────────────────────────────────────────
+model Transaction {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId   String?
+  account     Account?        @relation(fields: [accountId], references: [id])
+  assetId     String?
+  asset       Asset?          @relation(fields: [assetId], references: [id])
+  externalId  String?
+  txType      TransactionType
+  symbol      String          // denormalized for speed
+  quantity    Decimal         @db.Decimal(28, 10)
+  price       Decimal         @db.Decimal(28, 6)
+  totalValue  Decimal         @db.Decimal(28, 6)
+  fee         Decimal         @default(0) @db.Decimal(28, 6)
+  feeAsset    String?
+  currency    String
+  executedAt  DateTime
+  source      String          // 'BINANCE_API' | 'VNDIRECT_API' | 'MANUAL'
+  rawPayload  Json?
+  createdAt   DateTime        @default(now())
+
+  dcaExecution DcaExecution?
+
+  @@unique([accountId, externalId])
+  @@index([userId])
+  @@index([symbol])
+  @@index([executedAt(sort: Desc)])
+  @@index([txType])
+}
+
+enum TransactionType {
+  BUY
+  SELL
+  EARN
+  DCA
+  DIVIDEND
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+// ─────────────────────────────────────────
+// PRICE HISTORY (OHLCV)
+// ─────────────────────────────────────────
+model PriceHistory {
+  id          BigInt    @id @default(autoincrement())
+  assetId     String
+  asset       Asset     @relation(fields: [assetId], references: [id])
+  price       Decimal   @db.Decimal(28, 6)
+  open        Decimal?  @db.Decimal(28, 6)
+  high        Decimal?  @db.Decimal(28, 6)
+  low         Decimal?  @db.Decimal(28, 6)
+  volume      Decimal?  @db.Decimal(28, 4)
+  currency    String
+  interval    String    // '1d' | '1h' | '1m'
+  capturedAt  DateTime
+
+  @@unique([assetId, interval, capturedAt])
+  @@index([assetId, capturedAt(sort: Desc)])
+}
+
+// ─────────────────────────────────────────
+// PORTFOLIO SNAPSHOTS (daily roll-up)
+// ─────────────────────────────────────────
+model PortfolioSnapshot {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  snapshotDate    DateTime @db.Date
+  totalValueVnd   Decimal  @db.Decimal(20, 2)
+  totalValueUsd   Decimal  @db.Decimal(20, 6)
+  totalCostVnd    Decimal  @db.Decimal(20, 2)
+  totalPnlVnd     Decimal  @db.Decimal(20, 2)
+  roiPct          Decimal  @db.Decimal(10, 4)
+  breakdown       Json     // { crypto, stock, bond }
+  usdVndRate      Decimal  @db.Decimal(10, 2)
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, snapshotDate])
+  @@index([userId, snapshotDate(sort: Desc)])
+}
+
+// ─────────────────────────────────────────
+// DCA PLANS
+// ─────────────────────────────────────────
+model DcaPlan {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId       String?
+  account         Account? @relation(fields: [accountId], references: [id])
+  assetId         String?
+  asset           Asset?   @relation(fields: [assetId], references: [id])
+  symbol          String
+  planName        String?
+  amountPerCycle  Decimal  @db.Decimal(20, 6)
+  currency        String
+  frequency       String   // 'DAILY' | 'WEEKLY' | 'MONTHLY'
+  startDate       DateTime @db.Date
+  endDate         DateTime? @db.Date
+  isActive        Boolean  @default(true)
+  source          String   @default("MANUAL")
+  externalPlanId  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  executions DcaExecution[]
+
+  @@index([userId])
+}
+
+model DcaExecution {
+  id           String   @id @default(cuid())
+  planId       String
+  plan         DcaPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  txId         String?  @unique
+  transaction  Transaction? @relation(fields: [txId], references: [id])
+  executedAt   DateTime
+  status       String   // 'SUCCESS' | 'FAILED' | 'PENDING'
+  amountSpent  Decimal? @db.Decimal(20, 6)
+  qtyReceived  Decimal? @db.Decimal(28, 10)
+  price        Decimal? @db.Decimal(28, 6)
+  errorMsg     String?
+  createdAt    DateTime @default(now())
+
+  @@index([planId])
+}
+
+// ─────────────────────────────────────────
+// ALERT RULES
+// ─────────────────────────────────────────
+model AlertRule {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetId     String?
+  asset       Asset?    @relation(fields: [assetId], references: [id])
+  symbol      String?
+  ruleType    String    // 'PRICE_ABOVE' | 'PRICE_BELOW' | 'RSI_OB' | 'RSI_OS' | 'PNL_PCT'
+  threshold   Decimal   @db.Decimal(20, 6)
+  isActive    Boolean   @default(true)
+  notifiedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────
+// EXISTING MODELS (kept for backward compat)
+// ─────────────────────────────────────────
+enum HoldingType {
+  STOCK
+  CRYPTO
+}
+
+model Holding {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         HoldingType
+  ticker       String
+  name         String
+  shares       Float
+  buyPrice     Float
+  currentPrice Float
+  sector       String?
+  currency     String      @default("VND")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([userId])
+}
+
+enum SavingsType {
+  BANK
+  MOMO
+}
+
+model SavingsAccount {
+  id           String           @id @default(cuid())
+  userId       String
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  savingsType  SavingsType      @default(BANK)
+  bank         String
+  name         String
+  amount       Float
+  currency     String           @default("VND")
+  interestRate Float
+  startDate    DateTime         @default(now())
+  maturityDate DateTime?
+  isRolling    Boolean          @default(false)
+  note         String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  deposits     SavingsDeposit[]
+
+  @@index([userId])
+}
+
+model SavingsDeposit {
+  id               String         @id @default(cuid())
+  savingsAccountId String
+  savingsAccount   SavingsAccount @relation(fields: [savingsAccountId], references: [id], onDelete: Cascade)
+  amount           Float
+  depositedAt      DateTime       @default(now())
+  note             String?
+  createdAt        DateTime       @default(now())
+
+  @@index([savingsAccountId])
+}
+
+model MonthlyBudget {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  month        Int
+  year         Int
+  income       Float
+  stockInvest  Float    @default(0)
+  cryptoInvest Float    @default(0)
+  spending     Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId, month, year])
+  @@index([userId])
+}
+
+// ── DSIP (VNDirect Đầu tư Định kỳ) ──────────────────────────
+
+model DsipPlan {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  funds         Json         // [{symbol, name, allocation}]
+  monthlyAmount Float
+  scheduleDay   Int          // ngày trong tháng (1-28)
+  startDate     DateTime
+  sourceAccount String?
+  isActive      Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  records       DsipRecord[]
+
+  @@index([userId])
+}
+
+model DsipRecord {
+  id            String   @id @default(cuid())
+  planId        String
+  plan          DsipPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  investedAt    DateTime
+  totalInvested Float
+  fundData      Json     // [{symbol, nav, units, amount}]
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  @@index([planId])
+  @@index([investedAt])
+}
+
+// ── DIP BUY AGENT ─────────────────────────────────────────
+
+model DipBuyConfig {
+  id            String  @id @default(cuid())
+  userId        String  @unique
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  isActive      Boolean @default(false)
+  isDryRun      Boolean @default(true)
+  threshold     Float   @default(5)
+  amountUsdt    Float   @default(10)
+  cooldownHours Int     @default(4)
+  maxPerDay     Float   @default(50)
+  selectedCoins String  @default("ALL") // "ALL" hoặc "BTC,ETH,BNB"
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  logs          DipBuyLog[]
+}
+
+model DipBuyLog {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  configId      String
+  config        DipBuyConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+
+  coin          String
+  symbol        String
+  changePercent Float
+  amountUsdt    Float
+  isDryRun      Boolean
+  status        String
+  skipReason    String?
+  errorMsg      String?
+  orderId       String?
+  executedQty   String?
+  avgPrice      Float?
+
+  executedAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([configId])
+  @@index([executedAt])
+}
+
+// ─────────────────────────────────────────
+// BINANCE SPOT TRADES (lưu DB để không mất khi API thay đổi)
+// ─────────────────────────────────────────
+model BinanceTrade {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradeId     BigInt
+  symbol      String
+  side        String   // 'BUY' | 'SELL'
+  price       Decimal  @db.Decimal(28, 8)
+  qty         Decimal  @db.Decimal(28, 10)
+  total       Decimal  @db.Decimal(28, 6)
+  fee         Decimal  @db.Decimal(28, 10)
+  feeAsset    String
+  executedAt  DateTime
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, tradeId])
+  @@index([userId, symbol])
+  @@index([userId, executedAt(sort: Desc)])
+}

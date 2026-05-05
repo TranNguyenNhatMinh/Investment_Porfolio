@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables — KHÔNG push lên GitHub
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+.next/
+out/
+build/
+
+# Prisma
+backend/prisma/migrations/**/migration_lock.toml
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Claude Code
+.claude/
+
+# TypeScript cache
+*.tsbuildinfo
+tsconfig.tsbuildinfo

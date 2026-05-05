@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: investment_db
+    environment:
+      POSTGRES_USER: invest
+      POSTGRES_PASSWORD: invest123
+      POSTGRES_DB: investment
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invest -d investment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: investment_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@invest.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5051:80"
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
